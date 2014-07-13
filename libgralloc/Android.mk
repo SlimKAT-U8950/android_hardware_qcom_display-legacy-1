@@ -30,6 +30,11 @@ include $(BUILD_SHARED_LIBRARY)
 
 #MemAlloc Library
 include $(CLEAR_VARS)
+
+ifneq ($(TARGET_HAS_OLD_QCOM_ION),)
+libmemalloc-def := -DOLD_ION_API
+endif
+
 LOCAL_MODULE           := libmemalloc
 LOCAL_MODULE_TAGS      := optional
 LOCAL_C_INCLUDES       := $(common_includes) $(kernel_includes)
