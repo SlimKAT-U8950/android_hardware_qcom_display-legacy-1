@@ -135,6 +135,13 @@ int IonController::allocate(alloc_data& data, int usage,
         noncontig = true;
     }
 
+#ifndef NO_IOMMU
+    if(usage & GRALLOC_USAGE_PRIVATE_IOMMU_HEAP) {
+        ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+        nonContig = true;
+    }
+#endif
+
     if(usage & GRALLOC_USAGE_PRIVATE_IOMMU_HEAP)
         ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
 
@@ -161,6 +168,9 @@ int IonController::allocate(alloc_data& data, int usage,
     // we run out.
     if(!ionFlags)
         ionFlags = ION_HEAP(ION_SF_HEAP_ID) | ION_HEAP(ION_IOMMU_HEAP_ID);
+#ifndef NO_IOMMU
+        ionFlags |= ION_HEAP(ION_IOMMU_HEAP_ID);
+#endif
 
     data.flags = ionFlags;
     ret = mIonAlloc->alloc_buffer(data);

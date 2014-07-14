@@ -47,3 +47,8 @@ ifeq ($(call is-vendor-board-platform,QCOM),true)
      kernel_includes += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
  endif
 endif
+
+
+ifneq ($(filter msm7x30 msm8660,$(TARGET_BOARD_PLATFORM)),)
+    common_flags += -DNO_IOMMU
+endif

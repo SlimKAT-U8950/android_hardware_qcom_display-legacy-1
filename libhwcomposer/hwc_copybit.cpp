@@ -25,6 +25,12 @@
 #include "comptype.h"
 #include "egl_handles.h"
 
+#ifdef NO_IOMMU
+#define HEAP_ID GRALLOC_USAGE_PRIVATE_UI_CONTIG_HEAP
+#else
+#define HEAP_ID GRALLOC_USAGE_PRIVATE_IOMMU_HEAP
+#endif
+
 #define MAX_COPYBIT_RECT 12
 
 namespace qhwc {
