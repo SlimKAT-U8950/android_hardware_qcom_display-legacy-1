@@ -1183,7 +1183,8 @@ static int stretch_copybit_internal(
         // Flush the cache
         sp<IMemAlloc> memalloc = sAlloc->getAllocator(src_hnd->flags);
         if (memalloc->clean_buffer((void *)(src_hnd->base), src_hnd->size,
-                                   src_hnd->offset, src_hnd->fd)) {
+                                   src_hnd->offset, src_hnd->fd,
+                                   gralloc::CACHE_CLEAN)) {
             ALOGE("%s: clean_buffer failed", __FUNCTION__);
             delete_handle(dst_hnd);
             delete_handle(src_hnd);
@@ -1259,8 +1260,9 @@ static int stretch_copybit_internal(
         }
         // Invalidate the cache.
         sp<IMemAlloc> memalloc = sAlloc->getAllocator(dst_hnd->flags);
-        memalloc->clean_buffer((void *)(dst_hnd->base), dst_hnd->size,
-                               dst_hnd->offset, dst_hnd->fd);
+        if (memalloc->clean_buffer((void *)(src_hnd->base), src_hnd->size,
+                                   src_hnd->offset, src_hnd->fd,
+                                   gralloc::CACHE_CLEAN));
     }
     delete_handle(dst_hnd);
     delete_handle(src_hnd);
