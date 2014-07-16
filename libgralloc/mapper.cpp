@@ -286,8 +286,7 @@ int gralloc_unlock(gralloc_module_t const* module,
         int err;
         sp<IMemAlloc> memalloc = getAllocator(hnd->flags) ;
         err = memalloc->clean_buffer((void*)hnd->base,
-                                     hnd->size, hnd->offset, hnd->fd,
-                                     CACHE_INVALIDATE);
+                                     hnd->size, hnd->offset, hnd->fd);
         ALOGE_IF(err < 0, "cannot flush handle %p (offs=%x len=%x, flags = 0x%x) err=%s\n",
                  hnd, hnd->offset, hnd->size, hnd->flags, strerror(errno));
         hnd->flags &= ~private_handle_t::PRIV_FLAGS_NEEDS_FLUSH;

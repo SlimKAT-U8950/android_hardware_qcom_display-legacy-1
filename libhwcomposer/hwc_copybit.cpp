@@ -25,12 +25,6 @@
 #include "comptype.h"
 #include "egl_handles.h"
 
-#ifdef NO_IOMMU
-#define HEAP_ID GRALLOC_USAGE_PRIVATE_UI_CONTIG_HEAP
-#else
-#define HEAP_ID GRALLOC_USAGE_PRIVATE_IOMMU_HEAP
-#endif
-
 #define MAX_COPYBIT_RECT 12
 
 namespace qhwc {
@@ -357,7 +351,7 @@ int  CopyBit::drawLayerUsingCopybit(hwc_context_t *dev, hwc_layer_1_t *layer,
        }
        ALOGE("%s:%d::tmp_w = %d,tmp_h = %d",__FUNCTION__,__LINE__,tmp_w,tmp_h);
 
-       int usage = HEAP_ID;
+       int usage = GRALLOC_USAGE_PRIVATE_MM_HEAP;
 
        if (0 == alloc_buffer(&tmpHnd, tmp_w, tmp_h, fbHandle->format, usage)){
             copybit_image_t tmp_dst;

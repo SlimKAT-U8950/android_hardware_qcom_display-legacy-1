@@ -50,7 +50,7 @@ class PmemAdspAlloc : public IMemAlloc  {
                              int offset);
 
     virtual int clean_buffer(void *base, size_t size,
-                             int offset, int fd, int op);
+                             int offset, int fd);
 };
 
 }
