@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008, The Android Open Source Project
- * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ struct private_module_t HAL_MODULE_INFO_SYM = {
 base: {
     common: {
         tag: HARDWARE_MODULE_TAG,
-             module_api_version: 1,
+             module_api_version: GRALLOC_MODULE_API_VERSION_0_1,
              hal_api_version: 0,
              id: GRALLOC_HARDWARE_MODULE_ID,
              name: "Graphics Memory Allocator Module",

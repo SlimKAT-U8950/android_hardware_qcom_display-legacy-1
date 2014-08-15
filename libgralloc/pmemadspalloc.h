@@ -1,4 +1,6 @@
-/* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+/*
+ * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
@@ -24,29 +26,33 @@
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#ifndef QCOM_GPUFORMATS_H
-#define QCOM_GPUFORMATS_H
-#include <gralloc_priv.h>
 
-namespace qdutils {
-/*
- * Checks if the format is supported by the GPU.
- *
- * @param: format to check
- *
- * @return true if the format is supported by the GPU.
- */
-static inline bool isGPUSupportedFormat(int format)
-{
-    if ((format == HAL_PIXEL_FORMAT_RGB_888)      ||
-        (format == HAL_PIXEL_FORMAT_YCrCb_422_SP) ||
-        (format == HAL_PIXEL_FORMAT_YCbCr_422_SP)) {
-        return false;
-    }
-    return true;
+#ifndef GRALLOC_PMEMALLOC_H
+#define GRALLOC_PMEMALLOC_H
+
+#include "memalloc.h"
+#include "gr.h"
+
+namespace gralloc {
+
+class PmemAdspAlloc : public IMemAlloc  {
+
+    public:
+    virtual int alloc_buffer(alloc_data& data);
+
+    virtual int free_buffer(void *base, size_t size,
+                            int offset, int fd);
+
+    virtual int map_buffer(void **pBase, size_t size,
+                           int offset, int fd);
+
+    virtual int unmap_buffer(void *base, size_t size,
+                             int offset);
+
+    virtual int clean_buffer(void*base, size_t size,
+                             int offset, int fd);
+};
+
 }
-}; //namespace qdutils
 
-
-
-#endif /* end of include guard: QCOM_GPUFORMATS_H */
+#endif /* GRALLOC_PMEMALLOC_H */

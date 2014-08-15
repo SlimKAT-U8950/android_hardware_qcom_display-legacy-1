@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2012 Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2012 The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,67 +84,25 @@ static int fb_setSwapInterval(struct framebuffer_device_t* dev,
     return 0;
 }
 
-static int fb_setUpdateRect(struct framebuffer_device_t* dev,
-                            int l, int t, int w, int h)
-{
-    if (((w|h) <= 0) || ((l|t)<0))
-        return -EINVAL;
-    fb_context_t* ctx = (fb_context_t*)dev;
-    private_module_t* m = reinterpret_cast<private_module_t*>(
-        dev->common.module);
-    m->info.reserved[0] = 0x54445055; // "UPDT";
-    m->info.reserved[1] = (uint16_t)l | ((uint32_t)t << 16);
-    m->info.reserved[2] = (uint16_t)(l+w) | ((uint32_t)(t+h) << 16);
-    return 0;
-}
-
 static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 {
-    if (private_handle_t::validate(buffer) < 0)
-        return -EINVAL;
 
     fb_context_t* ctx = (fb_context_t*) dev;
 
     private_handle_t *hnd = static_cast<private_handle_t*>
-                            (const_cast<native_handle_t*>(buffer));
-
+            (const_cast<native_handle_t*>(buffer));
     private_module_t* m =
         reinterpret_cast<private_module_t*>(dev->common.module);
 
-
-    if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
-        genlock_lock_buffer(hnd, GENLOCK_READ_LOCK, GENLOCK_MAX_TIMEOUT);
-
-        const size_t offset = hnd->base - m->framebuffer->base;
-        // frame ready to be posted, signal so that hwc can update External
-        // display
-        pthread_mutex_lock(&m->fbPostLock);
-        m->currentOffset = offset;
-        m->fbPostDone = true;
-        pthread_cond_signal(&m->fbPostCond);
-        pthread_mutex_unlock(&m->fbPostLock);
-
-        m->info.activate = FB_ACTIVATE_VBL;
-        m->info.yoffset = offset / m->finfo.line_length;
-        if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
-            ALOGE("FBIOPUT_VSCREENINFO failed");
-            genlock_unlock_buffer(hnd);
+    if (hnd && hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
+        m->info.activate = FB_ACTIVATE_VBL | FB_ACTIVATE_FORCE;
+        m->info.yoffset = hnd->offset / m->finfo.line_length;
+        m->commit.var = m->info;
+        if (ioctl(m->framebuffer->fd, MSMFB_DISPLAY_COMMIT, &m->commit) == -1) {
+            ALOGE("%s: MSMFB_DISPLAY_COMMIT ioctl failed, err: %s", __FUNCTION__,
+                    strerror(errno));
             return -errno;
         }
-
-        //Signals the composition thread to unblock and loop over if necessary
-        pthread_mutex_lock(&m->fbPanLock);
-        m->fbPanDone = true;
-        pthread_cond_signal(&m->fbPanCond);
-        pthread_mutex_unlock(&m->fbPanLock);
-
-        if (m->currentBuffer) {
-            genlock_unlock_buffer(m->currentBuffer);
-            m->currentBuffer = 0;
-        }
-
-        CALC_FPS();
-        m->currentBuffer = hnd;
     }
     return 0;
 }
@@ -181,6 +139,8 @@ int mapFrameBufferLocked(struct private_module_t* module)
     if (fd < 0)
         return -errno;
 
+    memset(&module->commit, 0, sizeof(struct mdp_display_commit));
+
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
@@ -208,25 +168,14 @@ int mapFrameBufferLocked(struct private_module_t* module)
         /*
          * Explicitly request RGBA_8888
          */
-#if defined(SEMC_RGBA_8888_OFFSET) || defined(HTC_RGBA_8888_OFFSET)
-        info.red.offset     = 0;
-        info.green.offset   = 8;
-        info.blue.offset    = 16;
-#ifdef SEMC_RGBA_8888_OFFSET
-        info.transp.offset  = 24;
-#else
-        info.transp.offset  = 0;
-#endif
-#else
-        info.red.offset     = 24;
-        info.green.offset   = 16;
-        info.blue.offset    = 8;
-        info.transp.offset  = 0;
-#endif
         info.bits_per_pixel = 32;
+        info.red.offset     = 24;
         info.red.length     = 8;
+        info.green.offset   = 16;
         info.green.length   = 8;
+        info.blue.offset    = 8;
         info.blue.length    = 8;
+        info.transp.offset  = 0;
         info.transp.length  = 8;
 
         /* Note: the GL driver does not have a r=8 g=8 b=8 a=0 config, so if we
@@ -281,7 +230,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
     uint32_t line_length = (info.xres * info.bits_per_pixel / 8);
     info.yres_virtual = (size * numberOfBuffers) / line_length;
 
-#ifndef NO_HW_VSYNC
+#ifdef MSMFB_METADATA_SET
     struct msmfb_metadata metadata;
 
     metadata.op = metadata_op_base_blend;
@@ -314,9 +263,20 @@ int mapFrameBufferLocked(struct private_module_t* module)
 
     float xdpi = (info.xres * 25.4f) / info.width;
     float ydpi = (info.yres * 25.4f) / info.height;
+#ifdef MSMFB_METADATA_GET
+    struct msmfb_metadata metadata;
+    memset(&metadata, 0 , sizeof(metadata));
+    metadata.op = metadata_op_frame_rate;
+    if (ioctl(fd, MSMFB_METADATA_GET, &metadata) == -1) {
+        ALOGE("Error retrieving panel frame rate");
+        return -errno;
+    }
+    float fps  = metadata.data.panel_frame_rate;
+#else
+    //XXX: Remove reserved field usage on all baselines
     //The reserved[3] field is used to store FPS by the driver.
     float fps  = info.reserved[3] & 0xFF;
-
+#endif
     ALOGI("using (fd=%d)\n"
           "id           = %s\n"
           "xres         = %d px\n"
@@ -409,7 +369,9 @@ static int fb_close(struct hw_device_t *dev)
 {
     fb_context_t* ctx = (fb_context_t*)dev;
     if (ctx) {
-        free(ctx);
+        //Hack until fbdev is removed. Framework could close this causing hwc a
+        //pain.
+        //free(ctx);
     }
     return 0;
 }
@@ -455,11 +417,7 @@ int fb_device_open(hw_module_t const* module, const char* name,
             const_cast<int&>(dev->device.maxSwapInterval) =
                                                         PRIV_MAX_SWAP_INTERVAL;
             const_cast<int&>(dev->device.numFramebuffers) = m->numBuffers;
-            if (m->finfo.reserved[0] == 0x5444 &&
-                m->finfo.reserved[1] == 0x5055) {
-                dev->device.setUpdateRect = fb_setUpdateRect;
-                ALOGD("UPDATE_ON_DEMAND supported");
-            }
+            dev->device.setUpdateRect = 0;
 
             *device = &dev->device.common;
         }

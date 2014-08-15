@@ -1,6 +1,9 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
+ * Copyright (C)2012-2013, The Linux Foundation. All rights reserved.
+ *
+ * Not a Contribution, Apache license notifications and license are retained
+ * for attribution purposes only.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,31 +22,43 @@
 #define HWC_UTILS_H
 
 #define HWC_REMOVE_DEPRECATED_VERSIONS 1
+#include <fcntl.h>
 #include <hardware/hwcomposer.h>
+#include <gr.h>
 #include <gralloc_priv.h>
+#include <utils/String8.h>
+#include "qdMetaData.h"
+#include <overlayUtils.h>
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
 #define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
+#define FINAL_TRANSFORM_MASK 0x000F
 #define MAX_NUM_DISPLAYS 4 //Yes, this is ambitious
+#define MAX_NUM_LAYERS 32
+#define MAX_DISPLAY_DIM 2048
 
 //Fwrd decls
 struct hwc_context_t;
 struct framebuffer_device_t;
 
-namespace hwcService {
-class HWComposerService;
-}
+namespace ovutils = overlay::utils;
 
 namespace overlay {
 class Overlay;
+class Rotator;
+class RotMgr;
 }
 
 namespace qhwc {
 //fwrd decl
 class QueuedBufferStore;
 class ExternalDisplay;
-class CopybitEngine;
+class IFBUpdate;
+class IVideoOverlay;
+class MDPComp;
+class CopyBit;
+
 
 struct MDPInfo {
     int version;
@@ -51,42 +66,148 @@ struct MDPInfo {
     bool hasOverlay;
 };
 
-enum external_display_type {
-    EXT_TYPE_NONE,
-    EXT_TYPE_HDMI,
-    EXT_TYPE_WIFI
-};
-enum HWCCompositionType {
-    HWC_USE_GPU = HWC_FRAMEBUFFER, // This layer is to be handled by
-                                   // Surfaceflinger
-    HWC_USE_OVERLAY = HWC_OVERLAY, // This layer is to be handled by the overlay
-    HWC_USE_BACKGROUND
-                = HWC_BACKGROUND,  // This layer is to be handled by TBD
-    HWC_USE_COPYBIT                // This layer is to be handled by copybit
+struct DisplayAttributes {
+    uint32_t vsync_period; //nanos
+    uint32_t xres;
+    uint32_t yres;
+    uint32_t stride;
+    float xdpi;
+    float ydpi;
+    int fd;
+    bool connected; //Applies only to pluggable disp.
+    //Connected does not mean it ready to use.
+    //It should be active also. (UNBLANKED)
+    bool isActive;
+    // In pause state, composition is bypassed
+    // used for WFD displays only
+    bool isPause;
 };
 
+struct ListStats {
+    int numAppLayers; //Total - 1, excluding FB layer.
+    int skipCount;
+    int fbLayerIndex; //Always last for now. = numAppLayers
+    //Video specific
+    int yuvCount;
+    int yuvIndices[MAX_NUM_LAYERS];
+    bool needsAlphaScale;
+    bool preMultipliedAlpha;
+};
+
+struct LayerProp {
+    uint32_t mFlags; //qcom specific layer flags
+    LayerProp():mFlags(0) {};
+};
+
+// LayerProp::flag values
 enum {
-    HWC_MDPCOMP = 0x00000002,
-    HWC_LAYER_RESERVED_0 = 0x00000004,
-    HWC_LAYER_RESERVED_1 = 0x00000008
+    HWC_MDPCOMP = 0x00000001,
+    HWC_COPYBIT = 0x00000002,
 };
 
+class LayerCache {
+    public:
+    LayerCache() {
+        canUseLayerCache = false;
+        numHwLayers = 0;
+        for(uint32_t i = 0; i < MAX_NUM_LAYERS; i++) {
+            hnd[i] = NULL;
+        }
+    }
+    //LayerCache optimization
+    void updateLayerCache(hwc_display_contents_1_t* list);
+    void resetLayerCache(int num);
+    void markCachedLayersAsOverlay(hwc_display_contents_1_t* list);
+    private:
+    uint32_t numHwLayers;
+    bool canUseLayerCache;
+    buffer_handle_t hnd[MAX_NUM_LAYERS];
+
+};
+
+class LayerRotMap {
+public:
+    LayerRotMap() { reset(); }
+    enum { MAX_SESS = 3 };
+    void add(hwc_layer_1_t* layer, overlay::Rotator *rot);
+    void reset();
+    uint32_t getCount() const;
+    hwc_layer_1_t* getLayer(uint32_t index) const;
+    overlay::Rotator* getRot(uint32_t index) const;
+    void setReleaseFd(const int& fence);
+private:
+    hwc_layer_1_t* mLayer[MAX_SESS];
+    overlay::Rotator* mRot[MAX_SESS];
+    uint32_t mCount;
+};
+
+inline uint32_t LayerRotMap::getCount() const {
+    return mCount;
+}
+
+inline hwc_layer_1_t* LayerRotMap::getLayer(uint32_t index) const {
+    if(index >= mCount) return NULL;
+    return mLayer[index];
+}
+
+inline overlay::Rotator* LayerRotMap::getRot(uint32_t index) const {
+    if(index >= mCount) return NULL;
+    return mRot[index];
+}
 
 // -----------------------------------------------------------------------------
 // Utility functions - implemented in hwc_utils.cpp
 void dumpLayer(hwc_layer_1_t const* l);
-void getLayerStats(hwc_context_t *ctx, const hwc_display_contents_1_t *list);
+void setListStats(hwc_context_t *ctx, const hwc_display_contents_1_t *list,
+        int dpy);
 void initContext(hwc_context_t *ctx);
 void closeContext(hwc_context_t *ctx);
 //Crops source buffer against destination and FB boundaries
 void calculate_crop_rects(hwc_rect_t& crop, hwc_rect_t& dst,
-        const int fbWidth, const int fbHeight);
+                         const hwc_rect_t& scissor, int orient);
+void getNonWormholeRegion(hwc_display_contents_1_t* list,
+                              hwc_rect_t& nwr);
+bool isSecuring(hwc_context_t* ctx);
+bool isSecureModePolicy(int mdpVersion);
+bool isExternalActive(hwc_context_t* ctx);
+bool needsScaling(hwc_layer_1_t const* layer);
+bool isAlphaPresent(hwc_layer_1_t const* layer);
+int hwc_vsync_control(hwc_context_t* ctx, int dpy, int enable);
 
-// Waits for the fb_post to be called
-void wait4fbPost(hwc_context_t* ctx);
+//Helper function to dump logs
+void dumpsys_log(android::String8& buf, const char* fmt, ...);
 
-// Waits for the fb_post to finish PAN (primary commit)
-void wait4Pan(hwc_context_t* ctx);
+/* Calculates the destination position based on the action safe rectangle */
+void getActionSafePosition(hwc_context_t *ctx, int dpy, uint32_t& x,
+                                        uint32_t& y, uint32_t& w, uint32_t& h);
+
+//Close acquireFenceFds of all layers of incoming list
+void closeAcquireFds(hwc_display_contents_1_t* list);
+
+//Sync point impl.
+int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
+        int fd);
+
+//Trims a layer's source crop which is outside of screen boundary.
+void trimLayer(hwc_context_t *ctx, const int& dpy, const int& transform,
+        hwc_rect_t& crop, hwc_rect_t& dst);
+
+//Sets appropriate mdp flags for a layer.
+void setMdpFlags(hwc_layer_1_t *layer,
+        ovutils::eMdpFlags &mdpFlags,
+        int rotDownscale = 0);
+
+//Routine to configure low resolution panels (<= 2048 width)
+int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& dest,
+        overlay::Rotator **rot);
+
+//Routine to configure high resolution panels (> 2048 width)
+int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
+        const ovutils::eDest& rDest, overlay::Rotator **rot);
 
 // Inline utility functions
 static inline bool isSkipLayer(const hwc_layer_1_t* l) {
@@ -122,25 +243,45 @@ static inline bool isExtCC(const private_handle_t* hnd) {
     return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_CC));
 }
 
+template<typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
+template<typename T> inline T min(T a, T b) { return (a < b) ? a : b; }
+
 // Initialize uevent thread
 void init_uevent_thread(hwc_context_t* ctx);
-
 // Initialize vsync thread
 void init_vsync_thread(hwc_context_t* ctx);
 
 inline void getLayerResolution(const hwc_layer_1_t* layer,
-                                         int& width, int& height)
+                               int& width, int& height)
 {
     hwc_rect_t displayFrame  = layer->displayFrame;
     width = displayFrame.right - displayFrame.left;
     height = displayFrame.bottom - displayFrame.top;
 }
+
+static inline int openFb(int dpy) {
+    int fd = -1;
+    const char *devtmpl = "/dev/graphics/fb%u";
+    char name[64] = {0};
+    snprintf(name, 64, devtmpl, dpy);
+    fd = open(name, O_RDWR);
+    return fd;
+}
+
+template <class T>
+inline void swap(T& a, T& b) {
+    T tmp = a;
+    a = b;
+    b = tmp;
+}
+
 }; //qhwc namespace
 
 struct vsync_state {
     pthread_mutex_t lock;
     pthread_cond_t  cond;
     bool enable;
+    bool fakevsync;
 };
 
 // -----------------------------------------------------------------------------
@@ -149,43 +290,54 @@ struct vsync_state {
 struct hwc_context_t {
     hwc_composer_device_1_t device;
     const hwc_procs_t* proc;
-    int numHwLayers;
-    int overlayInUse;
-    hwc_display_t dpys[MAX_NUM_DISPLAYS];
-    int swapInterval;
-    double dynThreshold;
-
     //Framebuffer device
     framebuffer_device_t *mFbDev;
 
-    //Copybit Engine
-    qhwc::CopybitEngine* mCopybitEngine;
+    //CopyBit objects
+    qhwc::CopyBit *mCopyBit[HWC_NUM_DISPLAY_TYPES];
 
     //Overlay object - NULL for non overlay devices
     overlay::Overlay *mOverlay;
+    //Holds a few rot objects
+    overlay::RotMgr *mRotMgr;
 
-    //QueuedBufferStore to hold buffers for overlay
-    qhwc::QueuedBufferStore *qbuf;
-
-    //HWComposerService object
-    hwcService::HWComposerService *mHwcService;
-
+    //Primary and external FB updater
+    qhwc::IFBUpdate *mFBUpdate[HWC_NUM_DISPLAY_TYPES];
+    qhwc::IVideoOverlay *mVidOv[HWC_NUM_DISPLAY_TYPES];
     // External display related information
     qhwc::ExternalDisplay *mExtDisplay;
-
     qhwc::MDPInfo mMDP;
+    qhwc::DisplayAttributes dpyAttr[HWC_NUM_DISPLAY_TYPES];
+    qhwc::ListStats listStats[HWC_NUM_DISPLAY_TYPES];
+    qhwc::LayerCache *mLayerCache[HWC_NUM_DISPLAY_TYPES];
+    qhwc::LayerProp *layerProp[HWC_NUM_DISPLAY_TYPES];
+    qhwc::MDPComp *mMDPComp;
+    qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
 
+	//Securing in progress indicator
+    bool mSecuring;
+    //External Display configuring progress indicator
+    bool mExtDispConfiguring;
+    //Display in secure mode indicator
+    bool mSecureMode;
+    //Lock to prevent set from being called while blanking
+    mutable Locker mBlankLock;
+    //Lock to protect set when detaching external disp
+    mutable Locker mExtSetLock;
     //Vsync
     struct vsync_state vstate;
+    //DMA used for rotator
+    bool mDMAInUse;
+};
 
-    // flag that indicate secure session status
-    bool mSecure;
+namespace qhwc {
+static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
+    return  ctx->listStats[dpy].skipCount;
+}
 
-    // flag that indicate whether secure/desecure session in progress
-    bool mSecureConfig;
-
-    bool hdmi_pending;
-    char  mHDMIEvent[512];
+static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
+    return  ctx->listStats[dpy].yuvCount;
+}
 };
 
 #endif //HWC_UTILS_H

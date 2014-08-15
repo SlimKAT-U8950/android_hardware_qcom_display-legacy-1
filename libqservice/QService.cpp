@@ -71,18 +71,6 @@ android::status_t QService::screenRefresh() {
     return result;
 }
 
-void QService::setExtOrientation(uint32_t orientation) {
-    if(mClient.get()) {
-        mClient->notifyCallback(EXTERNAL_ORIENTATION, orientation);
-    }
-}
-
-void QService::setBufferMirrorMode(uint32_t enable) {
-    if(mClient.get()) {
-        mClient->notifyCallback(BUFFER_MIRRORMODE, enable);
-    }
-}
-
 void QService::init()
 {
     if(!sQService) {
