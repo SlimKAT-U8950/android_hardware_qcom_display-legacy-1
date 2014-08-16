@@ -41,6 +41,8 @@ public:
         UNSECURING, // Hardware unsecuring start/end notification
         CONNECT,
         SCREEN_REFRESH,
+        EXTERNAL_ORIENTATION,
+        BUFFER_MIRRORMODE,
     };
     enum {
         END = 0,
@@ -50,6 +52,8 @@ public:
     virtual void unsecuring(uint32_t startEnd) = 0;
     virtual void connect(const android::sp<qClient::IQClient>& client) = 0;
     virtual android::status_t screenRefresh() = 0;
+    virtual void setExtOrientation(uint32_t orientation) = 0;
+    virtual void setBufferMirrorMode(uint32_t enable) = 0;
 };
 
 // ----------------------------------------------------------------------------

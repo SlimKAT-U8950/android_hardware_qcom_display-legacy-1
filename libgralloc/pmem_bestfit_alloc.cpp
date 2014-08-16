@@ -164,11 +164,10 @@ SimpleBestFitAllocator::chunk_t* SimpleBestFitAllocator::dealloc(size_t start)
     chunk_t* cur = mList.head();
     while (cur) {
         if (cur->start == start) {
-#if 0
-            ALOG_FATAL_IF(cur->free,
+            LOG_FATAL_IF(cur->free,
                           "block at offset 0x%08lX of size 0x%08lX already freed",
                           cur->start*kMemoryAlign, cur->size*kMemoryAlign);
-#endif
+
             // merge freed blocks together
             chunk_t* freed = cur;
             cur->free = 1;
@@ -183,11 +182,11 @@ SimpleBestFitAllocator::chunk_t* SimpleBestFitAllocator::dealloc(size_t start)
                 }
                 cur = n;
             } while (cur && cur->free);
-#if 0
-            ALOG_FATAL_IF(!freed->free,
+
+            LOG_FATAL_IF(!freed->free,
                           "freed block at offset 0x%08lX of size 0x%08lX is not free!",
                           freed->start * kMemoryAlign, freed->size * kMemoryAlign);
-#endif
+
             return freed;
         }
         cur = cur->next;

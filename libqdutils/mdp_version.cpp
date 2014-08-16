@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012, Code Aurora Forum. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
  *     with the distribution.
- *   * Neither the name of The Linux Foundation nor the names of its
+ *   * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *     contributors may be used to endorse or promote products derived
  *     from this software without specific prior written permission.
  *
@@ -28,9 +28,7 @@
  */
 #include <cutils/log.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <linux/fb.h>
-#include <linux/msm_mdp.h>
 #include "mdp_version.h"
 
 ANDROID_SINGLETON_STATIC_INSTANCE(qdutils::MDPVersion);
@@ -42,11 +40,6 @@ MDPVersion::MDPVersion()
     int mdp_version = MDP_V_UNKNOWN;
     char panel_type = 0;
     struct fb_fix_screeninfo fb_finfo;
-
-    mMdpRev = 0;
-    mRGBPipes = mVGPipes = 0;
-    mDMAPipes = 0;
-
     if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &fb_finfo) < 0) {
         ALOGE("FBIOGET_FSCREENINFO failed");
         mdp_version =  MDP_V_UNKNOWN;
@@ -64,29 +57,13 @@ MDPVersion::MDPVersion()
             if (mdp_version < 100)
                 mdp_version *= 10;
 
-            mRGBPipes = mVGPipes = 2;
-
         } else if (!strncmp(fb_finfo.id, "mdssfb", 6)) {
             mdp_version = MDSS_V5;
-#ifdef MDSS_TARGET
-            struct msmfb_metadata metadata;
-            memset(&metadata, 0 , sizeof(metadata));
-            metadata.op = metadata_op_get_caps;
-            if (ioctl(fb_fd, MSMFB_METADATA_GET, &metadata) == -1) {
-                ALOGE("Error retrieving MDP revision and pipes info");
-                mdp_version = MDP_V_UNKNOWN;
-            } else {
-                mMdpRev = metadata.data.caps.mdp_rev;
-                mRGBPipes = metadata.data.caps.rgb_pipes;
-                mVGPipes = metadata.data.caps.vig_pipes;
-                mDMAPipes = metadata.data.caps.dma_pipes;
-            }
-#endif
         } else {
             mdp_version = MDP_V_UNKNOWN;
         }
         int len = strlen("msmfbXX_");
-        if (mdp_version == MDP_V3_0_3)
+        if (mdp_version == MDP_V3_0_2 || mdp_version == MDP_V3_0_3)
             len++;
         panel_type = fb_finfo.id[len];
 
@@ -94,7 +71,7 @@ MDPVersion::MDPVersion()
     close(fb_fd);
     mMDPVersion = mdp_version;
     mHasOverlay = false;
-    if((mMDPVersion >= MDP_V4_0) || (mMDPVersion == MDP_V_UNKNOWN))
+    if(mMDPVersion >= MDP_V4_0)
         mHasOverlay = true;
     mPanelType = panel_type;
 }

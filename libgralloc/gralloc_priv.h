@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,19 +51,38 @@ enum {
     GRALLOC_USAGE_PRIVATE_IOMMU_HEAP      =       0x01000000,
     /* MM heap is a carveout heap for video, can be secured*/
     GRALLOC_USAGE_PRIVATE_MM_HEAP         =       0x02000000,
+
     /* WRITEBACK heap is a carveout heap for writeback, can be secured*/
-    GRALLOC_USAGE_PRIVATE_WRITEBACK_HEAP  =       0x04000000,
+    GRALLOC_USAGE_PRIVATE_WRITEBACK_HEAP  =       0x00001000,
+
     /* CAMERA heap is a carveout heap for camera, is not secured*/
-    GRALLOC_USAGE_PRIVATE_CAMERA_HEAP     =       0x08000000,
+    GRALLOC_USAGE_PRIVATE_CAMERA_HEAP     =       0x00400000,
 
     /* Set this for allocating uncached memory (using O_DSYNC)
      * cannot be used with noncontiguous heaps */
-    GRALLOC_USAGE_PRIVATE_UNCACHED        =       0x00100000,
+    GRALLOC_USAGE_PRIVATE_UNCACHED        =       0x02000000,
 
     /* This flag needs to be set when using a non-contiguous heap from ION.
      * If not set, the system heap is assumed to be coming from ashmem
      */
     GRALLOC_USAGE_PRIVATE_ION             =       0x00200000,
+
+    /* Buffer content should be displayed on an primary display only */
+    GRALLOC_USAGE_PRIVATE_INTERNAL_ONLY   =       0x04000000,
+
+    /* Buffer content should be displayed on an external display only */
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY   =       0x08000000,
+
+    /* Only this buffer content should be displayed on external, even if
+     * other EXTERNAL_ONLY buffers are available. Used during suspend.
+     */
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK  =       0x00100000,
+
+    /* Close Caption displayed on an external display only */
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_CC     =       0x00200000,
+
+    /* This flag is used for SECURE display usecase */
+    GRALLOC_USAGE_PRIVATE_SECURE_DISPLAY  =       0x00800000,
 
     /* This flag can be set to disable genlock synchronization
      * for the gralloc buffer. If this flag is set the caller
@@ -76,17 +95,6 @@ enum {
     /* Set this flag when you need to avoid mapping the memory in userspace */
     GRALLOC_USAGE_PRIVATE_DO_NOT_MAP      =       0X00800000,
 
-    /* Buffer content should be displayed on an external display only */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY   =       0x00010000,
-
-    /* Only this buffer content should be displayed on external, even if
-     * other EXTERNAL_ONLY buffers are available. Used during suspend.
-     */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK  =       0x00020000,
-
-    /* Close Caption displayed on an external display only */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_CC     =       0x00200000,
-
     /* Use this flag to request content protected buffers. Please note
      * that this flag is different from the GRALLOC_USAGE_PROTECTED flag
      * which can be used for buffers that are not secured for DRM
@@ -98,20 +106,13 @@ enum {
 enum {
     /* Gralloc perform enums
     */
-#ifdef QCOM_BSP
     GRALLOC_MODULE_PERFORM_CREATE_HANDLE_FROM_BUFFER = 1,
-#else
-    GRALLOC_MODULE_PERFORM_CREATE_HANDLE_FROM_BUFFER = 0x080000001,
-#endif
     GRALLOC_MODULE_PERFORM_GET_STRIDE,
+    GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_FROM_HANDLE,
 };
-
 
 #define INTERLACE_MASK 0x80
 #define S3D_FORMAT_MASK 0xFF000
-#define DEVICE_PMEM "/dev/pmem"
-#define DEVICE_PMEM_ADSP "/dev/pmem_adsp"
-#define DEVICE_PMEM_SMIPOOL "/dev/pmem_smipool"
 /*****************************************************************************/
 enum {
     /* OEM specific HAL formats */
@@ -125,6 +126,8 @@ enum {
     HAL_PIXEL_FORMAT_RG_88                  = 0x10E,
     HAL_PIXEL_FORMAT_YCbCr_444_SP           = 0x10F,
     HAL_PIXEL_FORMAT_YCrCb_444_SP           = 0x110,
+    HAL_PIXEL_FORMAT_YCrCb_422_I            = 0x111,
+    HAL_PIXEL_FORMAT_NV21_ZSL               = 0x112,
     HAL_PIXEL_FORMAT_INTERLACE              = 0x180,
 
 };
@@ -181,15 +184,19 @@ struct private_handle_t : public native_handle {
             PRIV_FLAGS_VIDEO_ENCODER      = 0x00010000,
             PRIV_FLAGS_CAMERA_WRITE       = 0x00020000,
             PRIV_FLAGS_CAMERA_READ        = 0x00040000,
+            PRIV_FLAGS_HW_COMPOSER        = 0x00080000,
+            PRIV_FLAGS_HW_TEXTURE         = 0x00100000,
+            PRIV_FLAGS_ITU_R_601          = 0x00200000,
+            PRIV_FLAGS_ITU_R_601_FR       = 0x00400000,
+            PRIV_FLAGS_ITU_R_709          = 0x00800000,
+            PRIV_FLAGS_SECURE_DISPLAY     = 0x01000000,
         };
 
         // file-descriptors
         int     fd;
         // genlock handle to be dup'd by the binder
         int     genlockHandle;
-#ifdef QCOM_BSP
         int     fd_metadata;          // fd for the meta-data
-#endif
         // ints
         int     magic;
         int     flags;
@@ -202,11 +209,8 @@ struct private_handle_t : public native_handle {
         int     bufferType;
 #endif
         int     base;
-#ifdef QCOM_BSP
         int     offset_metadata;
-#endif
         // The gpu address mapped into the mmu.
-        // If using ashmem, set to 0, they don't care
         int     gpuaddr;
         int     pid;
         int     format;
@@ -214,28 +218,18 @@ struct private_handle_t : public native_handle {
         int     height;
         // local fd of the genlock device.
         int     genlockPrivFd;
-#ifdef QCOM_BSP
         int     base_metadata;
-#endif
 
 #ifdef __cplusplus
-#ifdef QCOM_BSP
-        static const int sNumInts = 14;
-        static const int sNumFds = 3;
-#else
         static const int sNumInts = 12;
         static const int sNumFds = 2;
-#endif
         static const int sMagic = 'gmsm';
 
         private_handle_t(int fd, int size, int flags, int bufferType,
                          int format,int width, int height, int eFd = -1,
                          int eOffset = 0, int eBase = 0) :
-            fd(fd), genlockHandle(-1),
-#ifdef QCOM_BSP
-            fd_metadata(eFd),
-#endif
-            magic(sMagic),  flags(flags),
+            fd(fd), fd_metadata(eFd), magic(sMagic),
+            flags(flags),
 #ifdef QCOM_BSP_CAMERA_ABI_HACK
             bufferType(bufferType),
 #endif
@@ -243,15 +237,9 @@ struct private_handle_t : public native_handle {
 #ifndef QCOM_BSP_CAMERA_ABI_HACK
             bufferType(bufferType),
 #endif
-            base(0),
-#ifdef QCOM_BSP
-            offset_metadata(eOffset),
-#endif
-            gpuaddr(0), pid(getpid()),
-            format(format), width(width), height(height), genlockPrivFd(-1)
-#ifdef QCOM_BSP
-            ,base_metadata(eBase)
-#endif
+            base(0), offset_metadata(eOffset), gpuaddr(0),
+            format(format), width(width), height(height),
+            base_metadata(eBase)
         {
             version = sizeof(native_handle);
             numInts = sNumInts;

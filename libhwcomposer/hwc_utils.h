@@ -23,26 +23,32 @@
 
 #define HWC_REMOVE_DEPRECATED_VERSIONS 1
 #include <fcntl.h>
+#include <math.h>
 #include <hardware/hwcomposer.h>
 #include <gr.h>
 #include <gralloc_priv.h>
 #include <utils/String8.h>
+#include <linux/fb.h>
 #include "qdMetaData.h"
 #include <overlayUtils.h>
+#include <cutils/sockets.h>
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
 #define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
-#define FINAL_TRANSFORM_MASK 0x000F
-#define MAX_NUM_DISPLAYS 4 //Yes, this is ambitious
-#define MAX_NUM_LAYERS 32
+#define MAX_NUM_APP_LAYERS 32
 #define MAX_DISPLAY_DIM 2048
+#define MAX_NUM_DISPLAYS 4 //Yes, this is ambitious
 
+#define DAEMON_SOCKET "pps"
 //Fwrd decls
 struct hwc_context_t;
-struct framebuffer_device_t;
 
 namespace ovutils = overlay::utils;
+
+namespace hwcService {
+class HWComposerService;
+}
 
 namespace overlay {
 class Overlay;
@@ -54,16 +60,27 @@ namespace qhwc {
 //fwrd decl
 class QueuedBufferStore;
 class ExternalDisplay;
+class VirtualDisplay;
 class IFBUpdate;
 class IVideoOverlay;
 class MDPComp;
-class CopyBit;
+class HwcDebug;
+class CopybitEngine;
 
 
 struct MDPInfo {
     int version;
     char panel;
     bool hasOverlay;
+};
+
+enum HWCCompositionType {
+    HWC_USE_GPU = HWC_FRAMEBUFFER, // This layer is to be handled by
+                                   // Surfaceflinger
+    HWC_USE_OVERLAY = HWC_OVERLAY, // This layer is to be handled by the overlay
+    HWC_USE_BACKGROUND
+                = HWC_BACKGROUND,  // This layer is to be handled by TBD
+    HWC_USE_COPYBIT                // This layer is to be handled by copybit
 };
 
 struct DisplayAttributes {
@@ -81,6 +98,13 @@ struct DisplayAttributes {
     // In pause state, composition is bypassed
     // used for WFD displays only
     bool isPause;
+    // To trigger padding round to clean up mdp
+    // pipes
+    bool isConfiguring;
+    // External Display is in MDP Downscale mode indicator
+    bool mDownScaleMode;
+    // Ext dst Rect
+    hwc_rect_t mDstRect;
 };
 
 struct ListStats {
@@ -89,14 +113,34 @@ struct ListStats {
     int fbLayerIndex; //Always last for now. = numAppLayers
     //Video specific
     int yuvCount;
-    int yuvIndices[MAX_NUM_LAYERS];
+    int yuvIndices[MAX_NUM_APP_LAYERS];
+    int extOnlyLayerIndex;
     bool needsAlphaScale;
     bool preMultipliedAlpha;
+    bool planeAlpha;
+    // Notifies hwcomposer about the start and end of animation
+    // This will be set to true during animation, otherwise false.
+    bool isDisplayAnimating;
+    bool secureUI; // Secure display layer
 };
 
 struct LayerProp {
     uint32_t mFlags; //qcom specific layer flags
     LayerProp():mFlags(0) {};
+};
+
+struct vsync_state {
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    bool enable;
+};
+
+struct CablProp {
+    bool enabled;
+    bool start;
+    bool videoOnly;
+    //daemon_socket for connection to pp-daemon
+    int daemon_socket;
 };
 
 // LayerProp::flag values
@@ -105,35 +149,18 @@ enum {
     HWC_COPYBIT = 0x00000002,
 };
 
-class LayerCache {
-    public:
-    LayerCache() {
-        canUseLayerCache = false;
-        numHwLayers = 0;
-        for(uint32_t i = 0; i < MAX_NUM_LAYERS; i++) {
-            hnd[i] = NULL;
-        }
-    }
-    //LayerCache optimization
-    void updateLayerCache(hwc_display_contents_1_t* list);
-    void resetLayerCache(int num);
-    void markCachedLayersAsOverlay(hwc_display_contents_1_t* list);
-    private:
-    uint32_t numHwLayers;
-    bool canUseLayerCache;
-    buffer_handle_t hnd[MAX_NUM_LAYERS];
-
-};
-
 class LayerRotMap {
 public:
     LayerRotMap() { reset(); }
     enum { MAX_SESS = 3 };
     void add(hwc_layer_1_t* layer, overlay::Rotator *rot);
+    //Resets the mapping of layer to rotator
     void reset();
+    //Clears mappings and existing rotator fences
+    //Intended to be used during errors
+    void clear();
     uint32_t getCount() const;
     hwc_layer_1_t* getLayer(uint32_t index) const;
-    overlay::Rotator* getRot(uint32_t index) const;
     void setReleaseFd(const int& fence);
 private:
     hwc_layer_1_t* mLayer[MAX_SESS];
@@ -150,36 +177,88 @@ inline hwc_layer_1_t* LayerRotMap::getLayer(uint32_t index) const {
     return mLayer[index];
 }
 
-inline overlay::Rotator* LayerRotMap::getRot(uint32_t index) const {
-    if(index >= mCount) return NULL;
-    return mRot[index];
+inline hwc_rect_t integerizeSourceCrop(const hwc_frect_t& cropF) {
+    hwc_rect_t cropI = {0};
+    cropI.left = int(ceilf(cropF.left));
+    cropI.top = int(ceilf(cropF.top));
+    cropI.right = int(floorf(cropF.right));
+    cropI.bottom = int(floorf(cropF.bottom));
+    return cropI;
+}
+
+inline bool isNonIntegralSourceCrop(const hwc_frect_t& cropF) {
+    if(cropF.left - roundf(cropF.left)     ||
+       cropF.top - roundf(cropF.top)       ||
+       cropF.right - roundf(cropF.right)   ||
+       cropF.bottom - roundf(cropF.bottom))
+        return true;
+    else
+        return false;
 }
 
 // -----------------------------------------------------------------------------
 // Utility functions - implemented in hwc_utils.cpp
 void dumpLayer(hwc_layer_1_t const* l);
+void getLayerStats(hwc_context_t *ctx, const hwc_display_contents_1_t *list);
 void setListStats(hwc_context_t *ctx, const hwc_display_contents_1_t *list,
         int dpy);
+// Waits for the fb_post to be called
+void wait4fbPost(hwc_context_t* ctx);
+
+// Waits for the fb_post to finish PAN (primary commit)
+void wait4Pan(hwc_context_t* ctx);
 void initContext(hwc_context_t *ctx);
 void closeContext(hwc_context_t *ctx);
 //Crops source buffer against destination and FB boundaries
 void calculate_crop_rects(hwc_rect_t& crop, hwc_rect_t& dst,
-                         const hwc_rect_t& scissor, int orient);
+        const int fbWidth, const int fbHeight);
 void getNonWormholeRegion(hwc_display_contents_1_t* list,
                               hwc_rect_t& nwr);
-bool isSecuring(hwc_context_t* ctx);
+bool isSecuring(hwc_context_t* ctx, hwc_layer_1_t const* layer);
 bool isSecureModePolicy(int mdpVersion);
 bool isExternalActive(hwc_context_t* ctx);
-bool needsScaling(hwc_layer_1_t const* layer);
+bool needsScaling(hwc_context_t* ctx, hwc_layer_1_t const* layer, const int& dpy);
 bool isAlphaPresent(hwc_layer_1_t const* layer);
+bool setupBasePipe(hwc_context_t *ctx);
 int hwc_vsync_control(hwc_context_t* ctx, int dpy, int enable);
+int getBlending(int blending);
 
 //Helper function to dump logs
 void dumpsys_log(android::String8& buf, const char* fmt, ...);
 
+int getExtOrientation(hwc_context_t* ctx);
+
+bool isValidRect(const hwc_rect_t& rect);
+hwc_rect_t deductRect(const hwc_rect_t& rect1, const hwc_rect_t& rect2);
+hwc_rect_t getIntersection(const hwc_rect_t& rect1, const hwc_rect_t& rect2);
+hwc_rect_t getUnion(const hwc_rect_t& rect1, const hwc_rect_t& rect2);
+void optimizeLayerRects(hwc_context_t *ctx,
+                        const hwc_display_contents_1_t *list, const int& dpy);
+
 /* Calculates the destination position based on the action safe rectangle */
-void getActionSafePosition(hwc_context_t *ctx, int dpy, uint32_t& x,
-                                        uint32_t& y, uint32_t& w, uint32_t& h);
+void getActionSafePosition(hwc_context_t *ctx, int dpy, hwc_rect_t& dst);
+
+void getAspectRatioPosition(int destWidth, int destHeight, int srcWidth,
+                                int srcHeight, hwc_rect_t& rect);
+
+void getAspectRatioPosition(hwc_context_t* ctx, int dpy, int extOrientation,
+                                hwc_rect_t& inRect, hwc_rect_t& outRect);
+
+bool isPrimaryPortrait(hwc_context_t *ctx);
+
+bool isOrientationPortrait(hwc_context_t *ctx);
+
+void calcExtDisplayPosition(hwc_context_t *ctx,
+                               private_handle_t *hnd,
+                               int dpy,
+                               hwc_rect_t& sourceCrop,
+                               hwc_rect_t& displayFrame,
+                               int& transform,
+                               ovutils::eTransform& orient);
+
+// Returns the orientation that needs to be set on external for
+// BufferMirrirMode(Sidesync)
+int getMirrorModeOrientation(hwc_context_t *ctx);
 
 //Close acquireFenceFds of all layers of incoming list
 void closeAcquireFds(hwc_display_contents_1_t* list);
@@ -195,18 +274,33 @@ void trimLayer(hwc_context_t *ctx, const int& dpy, const int& transform,
 //Sets appropriate mdp flags for a layer.
 void setMdpFlags(hwc_layer_1_t *layer,
         ovutils::eMdpFlags &mdpFlags,
-        int rotDownscale = 0);
+        int rotDownscale, int transform);
+
+int configRotator(overlay::Rotator *rot, ovutils::Whf& whf,
+        const ovutils::Whf& origWhf, const ovutils::eMdpFlags& mdpFlags,
+        const ovutils::eTransform& orient, const int& downscale);
+
+int configMdp(overlay::Overlay *ov, const ovutils::PipeArgs& parg,
+        const ovutils::eTransform& orient, const hwc_rect_t& crop,
+        const hwc_rect_t& pos, const MetaData_t *metadata,
+        const ovutils::eDest& dest);
+
+void updateSource(ovutils::eTransform& orient, ovutils::Whf& whf,
+        hwc_rect_t& crop);
+
+bool needToForceRotator(hwc_context_t *ctx, const int& dpy,
+         uint32_t w, uint32_t h, int transform);
 
 //Routine to configure low resolution panels (<= 2048 width)
 int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
-        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
-        const ovutils::eIsFg& isFg, const ovutils::eDest& dest,
+        ovutils::eMdpFlags& mdpFlags, ovutils::eZorder& z,
+        ovutils::eIsFg& isFg, const ovutils::eDest& dest,
         overlay::Rotator **rot);
 
 //Routine to configure high resolution panels (> 2048 width)
 int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
-        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
-        const ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
+        ovutils::eMdpFlags& mdpFlags, ovutils::eZorder& z,
+        ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
         const ovutils::eDest& rDest, overlay::Rotator **rot);
 
 // Inline utility functions
@@ -223,6 +317,12 @@ static inline bool isYuvBuffer(const private_handle_t* hnd) {
 static inline bool isSecureBuffer(const private_handle_t* hnd) {
     return (hnd && (private_handle_t::PRIV_FLAGS_SECURE_BUFFER & hnd->flags));
 }
+
+// Returns true if the buffer is non contiguous
+static inline bool isNonContigBuffer(const private_handle_t* hnd) {
+    return (hnd && (private_handle_t::PRIV_FLAGS_NONCONTIGUOUS_MEM & hnd->flags));
+}
+
 //Return true if buffer is marked locked
 static inline bool isBufferLocked(const private_handle_t* hnd) {
     return (hnd && (private_handle_t::PRIV_FLAGS_HWC_LOCK & hnd->flags));
@@ -241,6 +341,31 @@ static inline bool isExtBlock(const private_handle_t* hnd) {
 //Return true if buffer is for external display only with a Close Caption flag.
 static inline bool isExtCC(const private_handle_t* hnd) {
     return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_CC));
+}
+
+static inline int getWidth(const private_handle_t* hnd) {
+    if(isYuvBuffer(hnd)) {
+        MetaData_t *metadata = (MetaData_t *)hnd->base_metadata;
+        if(metadata && metadata->operation & UPDATE_BUFFER_GEOMETRY) {
+            return metadata->bufferDim.sliceWidth;
+        }
+    }
+    return hnd->width;
+}
+
+static inline int getHeight(const private_handle_t* hnd) {
+    if(isYuvBuffer(hnd)) {
+        MetaData_t *metadata = (MetaData_t *)hnd->base_metadata;
+        if(metadata && metadata->operation & UPDATE_BUFFER_GEOMETRY) {
+            return metadata->bufferDim.sliceHeight;
+        }
+    }
+    return hnd->height;
+}
+
+//Return true if the buffer is intended for Secure Display
+static inline bool isSecureDisplayBuffer(const private_handle_t* hnd) {
+    return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_SECURE_DISPLAY));
 }
 
 template<typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
@@ -281,7 +406,6 @@ struct vsync_state {
     pthread_mutex_t lock;
     pthread_cond_t  cond;
     bool enable;
-    bool fakevsync;
 };
 
 // -----------------------------------------------------------------------------
@@ -290,44 +414,94 @@ struct vsync_state {
 struct hwc_context_t {
     hwc_composer_device_1_t device;
     const hwc_procs_t* proc;
+    int overlayInUse;
+    int numHwLayers;
+    hwc_display_t dpys[MAX_NUM_DISPLAYS];
+    int swapInterval;
+    double dynThreshold;
+
     //Framebuffer device
     framebuffer_device_t *mFbDev;
 
-    //CopyBit objects
-    qhwc::CopyBit *mCopyBit[HWC_NUM_DISPLAY_TYPES];
+    //Copybit Engine
+    qhwc::CopybitEngine* mCopybitEngine;
 
     //Overlay object - NULL for non overlay devices
     overlay::Overlay *mOverlay;
+
+    //HWComposerService object
+    hwcService::HWComposerService *mHwcService;
+
+    //QueuedBufferStore to hold buffers for overlay
+    qhwc::QueuedBufferStore *qbuf;
     //Holds a few rot objects
     overlay::RotMgr *mRotMgr;
 
     //Primary and external FB updater
     qhwc::IFBUpdate *mFBUpdate[HWC_NUM_DISPLAY_TYPES];
-    qhwc::IVideoOverlay *mVidOv[HWC_NUM_DISPLAY_TYPES];
     // External display related information
     qhwc::ExternalDisplay *mExtDisplay;
+    qhwc::VirtualDisplay *mVirtualDisplay;
     qhwc::MDPInfo mMDP;
     qhwc::DisplayAttributes dpyAttr[HWC_NUM_DISPLAY_TYPES];
     qhwc::ListStats listStats[HWC_NUM_DISPLAY_TYPES];
-    qhwc::LayerCache *mLayerCache[HWC_NUM_DISPLAY_TYPES];
     qhwc::LayerProp *layerProp[HWC_NUM_DISPLAY_TYPES];
-    qhwc::MDPComp *mMDPComp;
-    qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
+    qhwc::MDPComp *mMDPComp[HWC_NUM_DISPLAY_TYPES];
+    qhwc::CablProp mCablProp;
+    qhwc::HwcDebug *mHwcDebug[HWC_NUM_DISPLAY_TYPES];
+    hwc_rect_t mViewFrame[HWC_NUM_DISPLAY_TYPES];
 
-	//Securing in progress indicator
+    // stores the #numHwLayers of the previous frame
+    // for each display device
+    int mPrevHwLayerCount[HWC_NUM_DISPLAY_TYPES];
+
+    // No animation on External display feature
+    // Notifies hwcomposer about the device orientation before animation.
+    int deviceOrientation;
+    // Stores the crop, dest rect and transform value of video before animation.
+    hwc_rect_t mPrevCropVideo;
+    hwc_rect_t mPrevDestVideo;
+    int mPrevTransformVideo;
+    //Securing in progress indicator
     bool mSecuring;
-    //External Display configuring progress indicator
-    bool mExtDispConfiguring;
+    //WFD on proprietary stack
+    bool mVirtualonExtActive;
     //Display in secure mode indicator
     bool mSecureMode;
-    //Lock to prevent set from being called while blanking
-    mutable Locker mBlankLock;
-    //Lock to protect set when detaching external disp
-    mutable Locker mExtSetLock;
-    //Vsync
-    struct vsync_state vstate;
     //DMA used for rotator
     bool mDMAInUse;
+    //MDP rotater needed
+    bool mNeedsRotator;
+    //Check if base pipe is set up
+    bool mBasePipeSetup;
+    //Lock to protect drawing data structures
+    mutable Locker mDrawLock;
+    //Drawing round when we use GPU
+    bool isPaddingRound;
+    // External Orientation
+    int mExtOrientation;
+    //Used for SideSync feature
+    //which overrides the mExtOrientation
+    bool mBufferMirrorMode;
+
+    qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
+
+    //previous Width & Height
+    overlay::utils::Whf mPrevWHF[HWC_NUM_DISPLAY_TYPES];
+    // Panel reset flag will be set if BTA check fails
+    bool mPanelResetStatus;
+
+    //Vsync
+    struct vsync_state vstate;
+
+    // flag that indicate secure session status
+    bool mSecure;
+
+    // flag that indicate whether secure/desecure session in progress
+    bool mSecureConfig;
+
+    bool hdmi_pending;
+    char  mHDMIEvent[512];
 };
 
 namespace qhwc {
@@ -338,6 +512,11 @@ static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
 static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].yuvCount;
 }
+
+static inline bool has90Transform(hwc_layer_1_t *layer) {
+    return (layer->transform & HWC_TRANSFORM_ROT_90);
+}
+
 };
 
 #endif //HWC_UTILS_H

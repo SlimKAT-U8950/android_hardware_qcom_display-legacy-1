@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
  *     with the distribution.
- *   * Neither the name of The Linux Foundation nor the names of its
+ *   * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *     contributors may be used to endorse or promote products derived
  *     from this software without specific prior written permission.
  *
@@ -75,45 +75,6 @@ class IonController : public IAllocController {
 #ifdef USE_PMEM_ADSP
     android::sp<PmemAdspAlloc> mPmemAlloc;
 #endif
-
-};
-
-class PmemKernelController : public IAllocController {
-
-    public:
-    virtual int allocate(alloc_data& data, int usage,
-                         int compositionType);
-
-    virtual android::sp<IMemAlloc> getAllocator(int flags);
-
-    PmemKernelController ();
-
-    ~PmemKernelController ();
-
-    private:
-    android::sp<IMemAlloc> mPmemAdspAlloc;
-
-};
-
-// Main pmem controller - this should only
-// be used within gralloc
-class PmemAshmemController : public IAllocController {
-
-    public:
-    virtual int allocate(alloc_data& data, int usage,
-                         int compositionType);
-
-    virtual android::sp<IMemAlloc> getAllocator(int flags);
-
-    PmemAshmemController();
-
-    ~PmemAshmemController();
-
-    private:
-    android::sp<IMemAlloc> mPmemUserspaceAlloc;
-    android::sp<IMemAlloc> mAshmemAlloc;
-    android::sp<IAllocController> mPmemKernelCtrl;
-
 };
 
 } //end namespace gralloc

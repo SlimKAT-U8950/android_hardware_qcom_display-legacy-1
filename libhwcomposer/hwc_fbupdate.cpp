@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -20,7 +20,6 @@
 
 #define DEBUG_FBUPDATE 0
 #include <gralloc_priv.h>
-#include <fb_priv.h>
 #include "hwc_fbupdate.h"
 #include "hwc_video.h"
 
@@ -83,10 +82,6 @@ bool FBUpdateLowRes::configure(hwc_context_t *ctx,
 
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
-        if (!hnd) {
-            ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
-            return false;
-        }
         ovutils::Whf info(hnd->width, hnd->height,
                 ovutils::getMdpFormat(hnd->format), hnd->size);
 
@@ -198,10 +193,6 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
 
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
-        if (!hnd) {
-            ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
-            return false;
-        }
         ovutils::Whf info(hnd->width, hnd->height,
                 ovutils::getMdpFormat(hnd->format), hnd->size);
 

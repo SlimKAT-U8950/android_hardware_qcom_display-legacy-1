@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (c) 2011-2012 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012 Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,13 +27,9 @@
 #include "gpu.h"
 #include "memalloc.h"
 #include "alloc_controller.h"
-#include "mdp_version.h"
-#include <qdMetaData.h>
 
 using namespace gralloc;
 using android::sp;
-
-#define SZ_1M 0x100000
 
 gpu_context_t::gpu_context_t(const private_module_t* module,
                              sp<IAllocController> alloc_ctrl ) :
@@ -48,9 +44,6 @@ gpu_context_t::gpu_context_t(const private_module_t* module,
     common.module  = const_cast<hw_module_t*>(&module->base.common);
     common.close   = gralloc_close;
     alloc          = gralloc_alloc;
-#ifdef QCOM_BSP
-    allocSize      = gralloc_alloc_size;
-#endif
     free           = gralloc_free;
 
 }
@@ -138,94 +131,60 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
     data.offset = 0;
     data.fd = -1;
     data.base = 0;
+    data.size = size;
     if(format == HAL_PIXEL_FORMAT_YCbCr_420_SP_TILED)
         data.align = 8192;
     else
         data.align = getpagesize();
-
-    /* force 1MB alignment selectively for secure buffers, MDP5 onwards */
-    if ((qdutils::MDPVersion::getInstance().getMDPVersion() >= \
-         qdutils::MDSS_V5) && (usage & GRALLOC_USAGE_PROTECTED)) {
-        data.align = ALIGN(data.align, SZ_1M);
-        size = ALIGN(size, data.align);
-    }
-    data.size = size;
     data.pHandle = (unsigned int) pHandle;
     err = mAllocCtrl->allocate(data, usage, 0);
 
-    if (!err) {
-#ifdef QCOM_BSP
-        /* allocate memory for enhancement data */
-        alloc_data eData;
-        eData.fd = -1;
-        eData.base = 0;
-        eData.offset = 0;
-        eData.size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
-        eData.pHandle = data.pHandle;
-        eData.align = getpagesize();
-        int eDataUsage = GRALLOC_USAGE_PRIVATE_SYSTEM_HEAP;
-        int eDataErr = mAllocCtrl->allocate(eData, eDataUsage, 0);
-        ALOGE_IF(eDataErr, "gralloc failed for eDataErr=%s",
-                                          strerror(-eDataErr));
-#endif
-        if (usage & GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED) {
-            flags |= private_handle_t::PRIV_FLAGS_UNSYNCHRONIZED;
-        }
+    if (usage & GRALLOC_USAGE_PRIVATE_UNSYNCHRONIZED) {
+        flags |= private_handle_t::PRIV_FLAGS_UNSYNCHRONIZED;
+    }
 
-        if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY) {
-            flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_ONLY;
-            //The EXTERNAL_BLOCK flag is always an add-on
-            if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK) {
-                flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_BLOCK;
-            }
-            if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_CC) {
-                flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_CC;
-            }
+    if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY) {
+        flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_ONLY;
+        //The EXTERNAL_BLOCK flag is always an add-on
+        if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK) {
+            flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_BLOCK;
+        }if (usage & GRALLOC_USAGE_PRIVATE_EXTERNAL_CC) {
+            flags |= private_handle_t::PRIV_FLAGS_EXTERNAL_CC;
         }
+    }
 
-        if (usage & GRALLOC_USAGE_HW_VIDEO_ENCODER ) {
-            flags |= private_handle_t::PRIV_FLAGS_VIDEO_ENCODER;
-        }
-
-        if (usage & GRALLOC_USAGE_HW_CAMERA_WRITE) {
-            flags |= private_handle_t::PRIV_FLAGS_CAMERA_WRITE;
-        }
-
-        if (usage & GRALLOC_USAGE_HW_CAMERA_READ) {
-            flags |= private_handle_t::PRIV_FLAGS_CAMERA_READ;
-        }
-
+    if (err == 0) {
         flags |= data.allocType;
-#ifdef QCOM_BSP
-        int eBaseAddr = int(eData.base) + eData.offset;
-        private_handle_t *hnd = new private_handle_t(data.fd, size, flags,
-                bufferType, format, width, height, eData.fd, eData.offset,
-                eBaseAddr);
-#else
         private_handle_t* hnd = new private_handle_t(data.fd, size, flags,
-                bufferType, format, width,
-                height);
-#endif
+                                                     bufferType, format, width,
+                                                     height);
+
         hnd->offset = data.offset;
         hnd->base = int(data.base) + data.offset;
         *pHandle = hnd;
     }
 
     ALOGE_IF(err, "gralloc failed err=%s", strerror(-err));
-
     return err;
 }
 
 void gpu_context_t::getGrallocInformationFromFormat(int inputFormat,
+                                                    int *colorFormat,
                                                     int *bufferType)
 {
     *bufferType = BUFFER_TYPE_VIDEO;
+    *colorFormat = inputFormat;
 
-    if (inputFormat < 0x7) {
+    // HAL_PIXEL_FORMAT_RGB_888 is MPQ color format for VCAP videos
+    // value of RGB_888 is less than 0x7 and this format is not supported
+    // by the GPU
+    if ((inputFormat < 0x7) && (inputFormat != HAL_PIXEL_FORMAT_RGB_888)) {
         // RGB formats
+        *colorFormat = inputFormat;
         *bufferType = BUFFER_TYPE_UI;
     } else if ((inputFormat == HAL_PIXEL_FORMAT_R_8) ||
                (inputFormat == HAL_PIXEL_FORMAT_RG_88)) {
+        *colorFormat = inputFormat;
         *bufferType = BUFFER_TYPE_UI;
     }
 }
@@ -238,22 +197,9 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
 
     size_t size;
     int alignedw, alignedh;
-    int grallocFormat = format;
-    int bufferType;
-
-    //If input format is HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED then based on
-    //the usage bits, gralloc assigns a format.
-    if(format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
-        if(usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
-            grallocFormat = HAL_PIXEL_FORMAT_YCbCr_420_SP; //NV12
-        else if(usage & GRALLOC_USAGE_HW_CAMERA_READ)
-            grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
-        else if(usage & GRALLOC_USAGE_HW_CAMERA_WRITE)
-            grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
-    }
-
-    getGrallocInformationFromFormat(grallocFormat, &bufferType);
-    size = getBufferSizeAndDimensions(w, h, grallocFormat, alignedw, alignedh);
+    int colorFormat, bufferType;
+    getGrallocInformationFromFormat(format, &colorFormat, &bufferType);
+    size = getBufferSizeAndDimensions(w, h, colorFormat, alignedw, alignedh);
 
     if ((ssize_t)size <= 0)
         return -EINVAL;
@@ -262,7 +208,8 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
     // All buffers marked as protected or for external
     // display need to go to overlay
     if ((usage & GRALLOC_USAGE_EXTERNAL_DISP) ||
-        (usage & GRALLOC_USAGE_PROTECTED)) {
+        (usage & GRALLOC_USAGE_PROTECTED) ||
+        (usage & GRALLOC_USAGE_PRIVATE_CP_BUFFER)) {
         bufferType = BUFFER_TYPE_VIDEO;
     }
     int err;
@@ -270,7 +217,7 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         err = gralloc_alloc_framebuffer(size, usage, pHandle);
     } else {
         err = gralloc_alloc_buffer(size, usage, pHandle, bufferType,
-                                   grallocFormat, alignedw, alignedh);
+                                   format, alignedw, alignedh);
     }
 
     if (err < 0) {
@@ -302,15 +249,6 @@ int gpu_context_t::free_impl(private_handle_t const* hnd) {
                                         hnd->offset, hnd->fd);
         if(err)
             return err;
-#ifdef QCOM_BSP
-        // free the metadata space
-        unsigned long size = ROUND_UP_PAGESIZE(sizeof(MetaData_t));
-        err = memalloc->free_buffer((void*)hnd->base_metadata,
-                                    (size_t) size, hnd->offset_metadata,
-                                    hnd->fd_metadata);
-        if (err)
-            return err;
-#endif
     }
 
     // Release the genlock
