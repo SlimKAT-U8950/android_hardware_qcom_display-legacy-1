@@ -17,11 +17,6 @@ common_libs := liblog libutils libcutils libhardware
 
 #Common C flags
 common_flags := -DDEBUG_CALC_FPS -Wno-missing-field-initializers
-#common_flags += -Werror
-
-ifeq ($(TARGET_USES_ION),true)
-common_flags += -DUSE_ION
-endif
 
 ifeq ($(ARCH_ARM_HAVE_NEON),true)
     common_flags += -D__ARM_HAVE_NEON
@@ -31,10 +26,16 @@ ifeq ($(TARGET_NO_HW_VSYNC),true)
     common_flags += -DNO_HW_VSYNC
 endif
 
-common_deps  :=
+ifeq ($(TARGET_USES_QCOM_BSP),true)
+    common_flags += -DQCOM_BSP
+endif
+
+common_deps :=
 kernel_includes :=
 
+ifneq ($(TARGET_PREBUILT_HEADERS),true)
 ifeq ($(call is-vendor-board-platform,QCOM),true)
-    common_deps += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
-    kernel_includes += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
+     common_deps += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
+     kernel_includes += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
+ endif
 endif

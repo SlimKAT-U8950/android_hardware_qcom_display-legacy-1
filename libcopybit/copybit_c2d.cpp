@@ -47,10 +47,9 @@
 #include <dlfcn.h>
 
 using gralloc::IMemAlloc;
-#ifdef USE_ION
 using gralloc::IonController;
-#endif
 using gralloc::alloc_data;
+using android::sp;
 
 C2D_STATUS (*LINK_c2dCreateSurface)( uint32 *surface_id,
                                      uint32 surface_bits,
@@ -111,7 +110,7 @@ enum eC2DFlags {
     FLAGS_YUV_DESTINATION     = 1<<1
 };
 
-static gralloc::IAllocController* sAlloc = 0;
+static android::sp<gralloc::IAllocController> sAlloc = 0;
 /******************************************************************************/
 
 /** State information for each device instance */
@@ -268,10 +267,8 @@ static uint32 c2d_get_gpuaddr( struct private_handle_t *handle)
         memtype = KGSL_USER_MEM_TYPE_PMEM;
     else if (handle->flags & private_handle_t::PRIV_FLAGS_USES_ASHMEM)
         memtype = KGSL_USER_MEM_TYPE_ASHMEM;
-#ifdef USE_ION
     else if (handle->flags & private_handle_t::PRIV_FLAGS_USES_ION)
         memtype = KGSL_USER_MEM_TYPE_ION;
-#endif
     else {
         ALOGE("Invalid handle flags: 0x%x", handle->flags);
         return 0;
@@ -898,20 +895,20 @@ static size_t get_size(const bufferInfo& info)
     size_t size = 0;
     int w = info.width;
     int h = info.height;
-    int aligned_w = ALIGN(w, 16);
+    int aligned_w = ALIGN(w, 32);
     switch(info.format) {
         case HAL_PIXEL_FORMAT_NV12_ENCODEABLE:
             {
                 // Chroma for this format is aligned to 2K.
                 size = ALIGN((aligned_w*h), 2048) +
-                        ALIGN(aligned_w/2, 16) * (h/2) *2;
+                        ALIGN(aligned_w/2, 32) * (h/2) *2;
                 size = ALIGN(size, 4096);
             } break;
         case HAL_PIXEL_FORMAT_YCbCr_420_SP:
         case HAL_PIXEL_FORMAT_YCrCb_420_SP:
             {
                 size = aligned_w * h +
-                       ALIGN(aligned_w/2, 16) * (h/2) * 2;
+                       ALIGN(aligned_w/2, 32) * (h/2) * 2;
                 size = ALIGN(size, 4096);
             } break;
         default: break;
@@ -944,7 +941,7 @@ static int get_temp_buffer(const bufferInfo& info, alloc_data& data)
         return COPYBIT_FAILURE;
     }
 
-    int err = sAlloc->allocate(data, allocFlags);
+    int err = sAlloc->allocate(data, allocFlags, 0);
     if (0 != err) {
         ALOGE("%s: allocate failed", __FUNCTION__);
         return COPYBIT_FAILURE;
@@ -958,7 +955,7 @@ static int get_temp_buffer(const bufferInfo& info, alloc_data& data)
 static void free_temp_buffer(alloc_data &data)
 {
     if (-1 != data.fd) {
-        IMemAlloc* memalloc = sAlloc->getAllocator(data.allocType);
+        sp<IMemAlloc> memalloc = sAlloc->getAllocator(data.allocType);
         memalloc->free_buffer(data.base, data.size, 0, data.fd);
     }
 }
@@ -1184,7 +1181,7 @@ static int stretch_copybit_internal(
         }
 
         // Flush the cache
-        IMemAlloc* memalloc = sAlloc->getAllocator(src_hnd->flags);
+        sp<IMemAlloc> memalloc = sAlloc->getAllocator(src_hnd->flags);
         if (memalloc->clean_buffer((void *)(src_hnd->base), src_hnd->size,
                                    src_hnd->offset, src_hnd->fd)) {
             ALOGE("%s: clean_buffer failed", __FUNCTION__);
@@ -1261,7 +1258,7 @@ static int stretch_copybit_internal(
             return status;
         }
         // Invalidate the cache.
-        IMemAlloc* memalloc = sAlloc->getAllocator(dst_hnd->flags);
+        sp<IMemAlloc> memalloc = sAlloc->getAllocator(dst_hnd->flags);
         memalloc->clean_buffer((void *)(dst_hnd->base), dst_hnd->size,
                                dst_hnd->offset, dst_hnd->fd);
     }
@@ -1294,8 +1291,8 @@ static int blit_copybit(
     struct copybit_image_t const *src,
     struct copybit_region_t const *region)
 {
-    struct copybit_rect_t dr = { 0, 0, dst->w, dst->h };
-    struct copybit_rect_t sr = { 0, 0, src->w, src->h };
+    struct copybit_rect_t dr = { 0, 0, (int)dst->w, (int)dst->h };
+    struct copybit_rect_t sr = { 0, 0, (int)src->w, (int)src->h };
     return stretch_copybit_internal(dev, dst, src, &dr, &sr, region, false);
 }
 
